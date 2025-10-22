@@ -7,10 +7,11 @@
 // export default App;
 
 import { useEffect, useState } from "react";
+import IDE from "./components/IDE";
 
 function App() {
   const [projects, setProjects] = useState([]);
-  const apiUrl = process.env.REACT_APP_API_URL;
+  const apiUrl = process.env.REACT_APP_API_URL; // This should point to your Render backend
 
   useEffect(() => {
     fetch(`${apiUrl}/api/projects`)
@@ -20,29 +21,19 @@ function App() {
   }, [apiUrl]);
 
   return (
-    <div
-      style={{
-        backgroundColor: "var(--app-bg)",
-        color: "var(--app-text)",
-        position: "absolute",
-        top: 0, left: 0, right: 0, bottom: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexDirection: "column",
-        fontFamily: "Segoe UI, Roboto, sans-serif",
-        textAlign: "center",
-      }}
-    >
+    <div style={{ padding: "20px", fontFamily: "Segoe UI, Roboto, sans-serif" }}>
       <h1>CipherStudio Projects</h1>
+      {projects.length === 0 ? (
+        <p>No projects yet!</p>
+      ) : (
+        <ul>
+          {projects.map((p) => (
+            <li key={p._id}>{p.projectName}</li>
+          ))}
+        </ul>
+      )}
 
-      <ul>
-        {projects.map(p => (
-          <li key={p._id}>
-            {p.projectName || "Unnamed Project"} (ID: {p._id})
-          </li>
-        ))}
-      </ul>
+      <IDE /> {/* Your IDE component below the project list */}
     </div>
   );
 }
