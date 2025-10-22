@@ -1,33 +1,30 @@
-import { useState, useEffect } from "react";
-import IDE from "./components/IDE";
+import { useEffect, useState } from "react";
 
-function App() {
+export default function App() {
   const [projects, setProjects] = useState([]);
-  const apiUrl = process.env.REACT_APP_API_URL;
 
   useEffect(() => {
-    fetch(`${apiUrl}/api/projects`)
-      .then(res => res.json())
-      .then(data => setProjects(data))
-      .catch(err => console.error("API error:", err));
-  }, [apiUrl]);
+    fetch(`${process.env.REACT_APP_API_URL}/api/projects`)
+      .then((res) => res.json())
+      .then((data) => setProjects(data))
+      .catch((err) => console.error("Failed to fetch projects:", err));
+  }, []);
 
   return (
-    <div>
+    <div style={{ textAlign: "center", padding: "20px" }}>
       <h1>CipherStudio Projects</h1>
-      <ul>
-        {projects.length === 0 ? (
-          <li>No projects yet!</li>
-        ) : (
-          projects.map(p => (
-            <li key={p._id}>{p.projectName} (ID: {p._id})</li>
-          ))
-        )}
-      </ul>
 
-      <IDE />
+      {projects.length === 0 ? (
+        <p>No projects yet!</p>
+      ) : (
+        <ul>
+          {projects.map((p) => (
+            <li key={p._id}>
+              {p.projectName ? p.projectName : "Untitled Project"}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
-
-export default App;
