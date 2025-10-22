@@ -5,10 +5,41 @@ import {
   SandpackCodeEditor,
   SandpackPreview,
   SandpackConsole,
+  useSandpack,
 } from "@codesandbox/sandpack-react";
 import { githubLight, dracula } from "@codesandbox/sandpack-themes";
-import { v4 as uuidv4 } from "uuid";
 import FileExplorer from "./FileExplorer";
+
+/* ========== Short easy project IDs ========== */
+function makeId(len = 6) {
+  const ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // skip confusing chars
+  let out = "";
+  for (let i = 0; i < len; i++) out += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
+  return out;
+}
+function genEasyId() {
+  const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
+  let id;
+  do id = makeId(6);
+  while (all[id]);
+  return id;
+}
+
+/* ========== Bridge: collect live files from Sandpack ========== */
+function LiveFilesBridge({ bind }) {
+  const { sandpack } = useSandpack();
+  // Provide a collector that returns the latest code in the editor
+  useEffect(() => {
+    bind(() => {
+      const out = {};
+      Object.keys(sandpack.files).forEach((path) => {
+        out[path] = sandpack.files[path].code;
+      });
+      return out;
+    });
+  }, [bind, sandpack.files, sandpack.activeFile]);
+  return null;
+}
 
 export default function IDE() {
   // Palettes
@@ -25,10 +56,7 @@ export default function IDE() {
 
   // CSS inside the sandbox (preview) — ALWAYS white
   const staticCss = `
-    :root {
-      --app-bg: #ffffff;
-      --app-text: #000000;
-    }
+    :root { --app-bg: #ffffff; --app-text: #000000; }
     html, body, #root {
       background-color: var(--app-bg) !important;
       color: var(--app-text) !important;
@@ -66,7 +94,7 @@ export default function IDE() {
     import React from "react";
     import { createRoot } from "react-dom/client";
     import App from "./App";
-    import "./index.css"; // load static white theme CSS into the sandbox
+    import "./index.css";
     const root = createRoot(document.getElementById("root"));
     root.render(<App />);
   `;
@@ -79,10 +107,13 @@ export default function IDE() {
     "/index.css": staticCss, // ALWAYS white inside sandbox
   });
 
-  const [projectId] = useState(uuidv4());
+  const [projectId, setProjectId] = useState(() => genEasyId());
   const [projectName, setProjectName] = useState("MyProject");
   const [theme, setTheme] = useState(initialTheme);
   const isLight = theme === "light";
+
+  // This ref holds a function that returns the live files from Sandpack
+  const liveFilesCollectorRef = useRef(null);
 
   // Collapsible console
   const [showConsole, setShowConsole] = useState(
@@ -93,7 +124,7 @@ export default function IDE() {
     localStorage.setItem("cipherstudio:console", showConsole ? "shown" : "hidden");
   }, [showConsole]);
 
-  // Autosave (debounced)
+  // Autosave (interval over live files)
   const [autosave, setAutosave] = useState(
     JSON.parse(localStorage.getItem("cipherstudio:autosave") || "true")
   );
@@ -104,13 +135,15 @@ export default function IDE() {
   };
   useEffect(() => {
     if (!autosave) return;
-    const t = setTimeout(() => {
+    const id = setInterval(() => {
+      const collect = liveFilesCollectorRef.current;
+      const latest = collect ? collect() : files;
       const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
-      all[projectId] = { projectName, files };
+      all[projectId.toUpperCase()] = { projectName, files: latest };
       localStorage.setItem("cipherstudio:projects", JSON.stringify(all));
-    }, 800);
-    return () => clearTimeout(t);
-  }, [files, projectName, projectId, autosave]);
+    }, 2000);
+    return () => clearInterval(id);
+  }, [autosave, projectId, projectName, files]);
 
   // Apply theme to outer page
   useEffect(() => {
@@ -124,39 +157,55 @@ export default function IDE() {
     localStorage.setItem("cipherstudio:theme", next);
   };
 
-  // Project helpers
+  // Project helpers — SAVE/LOAD from live files
   const saveProject = () => {
+    const collect = liveFilesCollectorRef.current;
+    const latest = collect ? collect() : files;
     const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
-    all[projectId] = { projectName, files };
+    const id = projectId.toUpperCase();
+    all[id] = { projectName, files: latest };
     localStorage.setItem("cipherstudio:projects", JSON.stringify(all));
-    alert(`Project saved!\nID: ${projectId}`);
+    alert(`Project saved!\nID: ${id}`);
   };
 
   const loadProject = () => {
-    const id = prompt("Enter project ID:");
+    const raw = prompt("Enter project ID:");
+    const id = raw?.trim().toUpperCase();
+    if (!id) return;
     const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
     if (all[id]) {
       const loaded = { ...all[id].files };
       if (!loaded["/index.css"]) loaded["/index.css"] = staticCss; // ensure white preview
       setFiles(loaded);
       setProjectName(all[id].projectName);
+      setProjectId(id); // reflect loaded id in sidebar
       alert("Project loaded!");
     } else {
       alert("Project not found!");
     }
   };
 
+  const newProject = () => {
+    const id = genEasyId();
+    setProjectId(id);
+    setProjectName("MyProject");
+    setFiles({
+      "/App.js": appJs,
+      "/index.js": indexJs,
+      "/index.css": staticCss,
+    });
+    alert(`New project created.\nID: ${id}`);
+  };
+
   const addFile = () => {
     const n = prompt("File name (e.g. /NewFile.js):");
     if (n && !files[n]) setFiles({ ...files, [n]: "// new file content" });
   };
-
   const deleteFile = (name) => {
     const updated = { ...files };
     delete updated[name];
     setFiles(updated);
   };
-
   const renameFile = (oldPath) => {
     const newPath = prompt("Rename file to:", oldPath);
     if (!newPath || newPath === oldPath) return;
@@ -264,6 +313,7 @@ export default function IDE() {
             toggleTheme={toggleTheme}
             autosave={autosave}
             toggleAutosave={toggleAutosave}
+            newProject={newProject}
           />
         )}
       </div>
@@ -289,15 +339,17 @@ export default function IDE() {
           ☰
         </button>
 
-        <SandpackProvider
-          key={theme} // re-mount on theme change (outer theme); preview stays white via /index.css
-          template="react"
-          files={files}
-          theme={isLight ? githubLight : dracula}
-        >
+       <SandpackProvider
+template="react"
+files={files}
+theme={isLight ? githubLight : dracula}
+>
+          {/* Bind live file collector */}
+          <LiveFilesBridge bind={(collector) => (liveFilesCollectorRef.current = collector)} />
+
           {/* Top row + resizer + console */}
           <div ref={colRef} style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-            {/* Wrap SandpackLayout in a div to attach our ref */}
+            {/* Attach ref to wrapper for sizing */}
             <div
               ref={topRowRef}
               style={{
@@ -359,7 +411,7 @@ export default function IDE() {
                   }}
                 >
                   <SandpackPreview
-                    actions={["refresh"]} // hides "Open Sandbox", keeps Refresh
+                    actions={["refresh"]}
                     style={{
                       flex: 1,
                       backgroundColor: "var(--app-bg)", // always white from /index.css
@@ -375,7 +427,7 @@ export default function IDE() {
               <div
                 onMouseDown={onHDown}
                 style={{
-                  height: resizerH,
+                  height: 6,
                   backgroundColor: isLight ? lightBorder : darkBorder,
                   cursor: "ns-resize",
                 }}
