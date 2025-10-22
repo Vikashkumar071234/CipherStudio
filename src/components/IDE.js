@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   SandpackProvider,
   SandpackLayout,
@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from "uuid";
 import FileExplorer from "./FileExplorer";
 
 export default function IDE() {
-  // OneCompiler-like dark palette
+  // Palettes
   const darkBase = "#0f0f0f";
   const darkBorder = "#303134";
   const darkPanel = "#1e1e1e";
@@ -23,11 +23,11 @@ export default function IDE() {
   const lightPanel = "#fafafa";
   const lightText = "#000000";
 
-  // CSS that will run INSIDE the sandbox (preview iframe)
-  const themeCss = (isLight) => `
+  // CSS inside the sandbox (preview) — ALWAYS white
+  const staticCss = `
     :root {
-      --app-bg: ${isLight ? "#ffffff" : "#202124"};
-      --app-text: ${isLight ? "#000000" : "#e0e0e0"};
+      --app-bg: #ffffff;
+      --app-text: #000000;
     }
     html, body, #root {
       background-color: var(--app-bg) !important;
@@ -63,17 +63,16 @@ export default function IDE() {
   const indexJs = `import React from "react";
   import { createRoot } from "react-dom/client";
   import App from "./App";
-  import "./index.css";                 // IMPORTANT: load theme CSS into the sandbox
+  import "./index.css"; // load static white theme CSS into the sandbox
   const root = createRoot(document.getElementById("root"));
   root.render(<App />);`;
 
+  // Initial theme, files
   const initialTheme = localStorage.getItem("cipherstudio:theme") || "light";
-  const initialIsLight = initialTheme === "light";
-
   const [files, setFiles] = useState({
     "/App.js": appJs,
     "/index.js": indexJs,
-    "/index.css": themeCss(initialIsLight), // theme-controlled CSS file
+    "/index.css": staticCss, // ALWAYS white inside sandbox
   });
 
   const [projectId] = useState(uuidv4());
@@ -81,26 +80,30 @@ export default function IDE() {
   const [theme, setTheme] = useState(initialTheme);
   const isLight = theme === "light";
 
-  // Apply theme color to the outer page (outside sandbox)
+  // Console visibility + height
+  const [showConsole, setShowConsole] = useState(
+    localStorage.getItem("cipherstudio:console") !== "hidden"
+  );
+  const [consoleHeight, setConsoleHeight] = useState(150);
+
+  useEffect(() => {
+    localStorage.setItem("cipherstudio:console", showConsole ? "shown" : "hidden");
+  }, [showConsole]);
+
+  // Outer page color (not the sandbox)
   useEffect(() => {
     document.body.style.background = isLight ? lightBase : darkBase;
     document.body.style.color = isLight ? lightText : darkText;
   }, [isLight]);
 
-  // Toggle theme: update state AND rewrite /index.css inside the sandbox
   const toggleTheme = () => {
-    const nextTheme = isLight ? "dark" : "light";
-    setTheme(nextTheme);
-    localStorage.setItem("cipherstudio:theme", nextTheme);
-
-    const nextIsLight = nextTheme === "light";
-    setFiles((prev) => ({
-      ...prev,
-      "/index.css": themeCss(nextIsLight), // update CSS content inside iframe
-    }));
+    const next = isLight ? "dark" : "light";
+    setTheme(next);
+    localStorage.setItem("cipherstudio:theme", next);
+    // No need to touch /index.css — preview stays white by design
   };
 
-  // Save / load / files
+  // Project helpers
   const saveProject = () => {
     const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
     all[projectId] = { projectName, files };
@@ -131,6 +134,62 @@ export default function IDE() {
     setFiles(updated);
   };
 
+  // ===== Resizable Editor | Preview (vertical splitter) =====
+  const [leftSplitPct, setLeftSplitPct] = useState(50); // editor width %
+  const topRowRef = useRef(null);
+  const vDragging = useRef(false);
+
+  const onVDown = (e) => {
+    vDragging.current = true;
+    e.preventDefault();
+  };
+  const onVMove = (e) => {
+    if (!vDragging.current || !topRowRef.current) return;
+    const rect = topRowRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const pct = Math.max(20, Math.min(80, (x / rect.width) * 100)); // clamp 20%–80%
+    setLeftSplitPct(pct);
+  };
+  const onVUp = () => (vDragging.current = false);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", onVMove);
+    window.addEventListener("mouseup", onVUp);
+    return () => {
+      window.removeEventListener("mousemove", onVMove);
+      window.removeEventListener("mouseup", onVUp);
+    };
+  }, []);
+
+  // ===== Resizable Console (horizontal splitter) =====
+  const colRef = useRef(null);
+  const hDragging = useRef(false);
+  const resizerH = 6; // px
+  const consoleHeaderH = 32;
+
+  const onHDown = (e) => {
+    hDragging.current = true;
+    e.preventDefault();
+  };
+  const onHMove = (e) => {
+    if (!hDragging.current || !colRef.current) return;
+    const rect = colRef.current.getBoundingClientRect();
+    const topUsed = e.clientY - rect.top; // height used by top row + resizer
+    // Remaining space for console area = total - topUsed - header
+    const newH = Math.max(0, Math.min(rect.height - 80, rect.height - topUsed - consoleHeaderH));
+    setConsoleHeight(newH);
+  };
+  const onHUp = () => (hDragging.current = false);
+
+  useEffect(() => {
+    window.addEventListener("mousemove", onHMove);
+    window.addEventListener("mouseup", onHUp);
+    return () => {
+      window.removeEventListener("mousemove", onHMove);
+      window.removeEventListener("mouseup", onHUp);
+    };
+  }, []);
+
   return (
     <div
       style={{
@@ -155,88 +214,171 @@ export default function IDE() {
       />
 
       <SandpackProvider
-  key={theme}
-  template="react"
-  files={files}
-  theme={isLight ? githubLight : dracula}
-  options={{
-    customCSS: `
-      :root {
-        --app-bg: ${isLight ? lightPanel : darkEditor};
-        --app-text: ${isLight ? lightText : darkText};
-      }
-      html, body {
-        background-color: var(--app-bg) !important;
-        color: var(--app-text) !important;
-        margin: 0;
-        height: 100%;
-        transition: background-color .3s ease, color .3s ease;
-      }
-    `,
-  }}
->
-  {/* Make a column: row (editor+preview) on top, console full width at bottom */}
-  <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-    <SandpackLayout
-      style={{
-        flex: 1,
-        minHeight: 0,               // important for nested flex heights
-        display: "flex",
-        flexDirection: "row",
-        backgroundColor: isLight ? lightBase : darkPanel,
-        borderLeft: `1px solid ${isLight ? lightBorder : darkBorder}`,
-        transition: "background-color 0.3s ease",
-      }}
-    >
-      {/* Editor column */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          borderRight: `1px solid ${isLight ? lightBorder : darkBorder}`,
-          backgroundColor: isLight ? lightPanel : darkEditor,
-        }}
+        key={theme} // re-mount on theme change (outer theme); preview stays white via index.css
+        template="react"
+        files={files}
+        theme={isLight ? githubLight : dracula}
       >
-        <SandpackCodeEditor
-          showTabs
-          showLineNumbers
-          style={{ height: "100%", backgroundColor: "transparent" }}
-        />
-      </div>
+        {/* Column: top row (editor+preview), resizer, bottom (console) */}
+        <div ref={colRef} style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+          {/* Top row */}
+          <SandpackLayout
+            ref={topRowRef}
+            style={{
+              flex: showConsole ? `0 0 calc(100% - ${resizerH + consoleHeaderH + consoleHeight}px)` : "1",
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "row",
+              backgroundColor: isLight ? lightPanel : darkPanel,
+              borderLeft: `1px solid ${isLight ? lightBorder : darkBorder}`,
+              transition: "background-color 0.3s ease",
+            }}
+          >
+            {/* Editor wrapper (resizable) */}
+            <div
+              style={{
+                width: `${leftSplitPct}%`,
+                minWidth: 0,
+                minHeight: 0,
+                borderRight: `1px solid ${isLight ? lightBorder : darkBorder}`,
+                backgroundColor: isLight ? lightPanel : darkEditor,
+              }}
+            >
+              <SandpackCodeEditor
+                showTabs
+                showLineNumbers
+                style={{ height: "100%", backgroundColor: "transparent" }}
+              />
+            </div>
 
-      {/* Preview column */}
-      <div
-        style={{
-          flex: 1,
-          minWidth: 0,
-          minHeight: 0,
-          display: "flex",
-          backgroundColor: isLight ? lightPanel : darkEditor,
-          color: isLight ? lightText : darkText,
-        }}
-      >
-        <SandpackPreview
-          style={{
-            flex: 1,
-            backgroundColor: "var(--app-bg)",
-            color: "var(--app-text)",
-          }}
-        />
-      </div>
-    </SandpackLayout>
+            {/* Vertical resizer */}
+            <div
+              onMouseDown={onVDown}
+              style={{
+                width: 6,
+                cursor: "col-resize",
+                backgroundColor: isLight ? lightBorder : darkBorder,
+              }}
+              title="Drag to resize editor/output"
+            />
 
-    {/* Console spans the full width under both columns */}
-    <SandpackConsole
-      style={{
-        height: 150,
-        backgroundColor: isLight ? "#f7f7f7" : darkBase,
-        color: isLight ? "#000000" : darkText,
-        borderTop: `1px solid ${isLight ? lightBorder : darkBorder}`,
-      }}
-    />
-  </div>
-</SandpackProvider>
+            {/* Preview wrapper */}
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                minHeight: 0,
+                display: "flex",
+                backgroundColor: isLight ? lightPanel : darkEditor,
+                color: isLight ? lightText : darkText,
+              }}
+            >
+              <SandpackPreview
+                actions={["refresh"]} // hide "Open Sandbox", keep Refresh
+                style={{
+                  flex: 1,
+                  backgroundColor: "var(--app-bg)", // always white (from index.css)
+                  color: "var(--app-text)",
+                }}
+              />
+            </div>
+          </SandpackLayout>
+
+          {/* Horizontal resizer (only if console visible) */}
+          {showConsole && (
+            <div
+              onMouseDown={onHDown}
+              style={{
+                height: resizerH,
+                backgroundColor: isLight ? lightBorder : darkBorder,
+                cursor: "ns-resize",
+              }}
+              title="Drag to resize console height"
+            />
+          )}
+
+          {/* Console (collapsible) */}
+          <div
+            style={{
+              display: showConsole ? "block" : "none",
+              backgroundColor: isLight ? "#f7f7f7" : darkBase,
+              color: isLight ? "#000" : darkText,
+              borderTop: `1px solid ${isLight ? lightBorder : darkBorder}`,
+              height: showConsole ? consoleHeaderH + consoleHeight : 0,
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                height: consoleHeaderH,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "0 10px",
+                userSelect: "none",
+              }}
+            >
+              <span style={{ fontWeight: 600 }}>Console</span>
+              <button
+                onClick={() => setShowConsole((s) => !s)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+                title="Hide console"
+              >
+                ▾
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ height: consoleHeight }}>
+              <SandpackConsole
+                style={{
+                  height: "100%",
+                  backgroundColor: "transparent",
+                  color: "inherit",
+                }}
+              />
+            </div>
+          </div>
+
+          {/* If console hidden, show a small collapsed bar to reopen */}
+          {!showConsole && (
+            <div
+              style={{
+                height: consoleHeaderH,
+                backgroundColor: isLight ? "#f7f7f7" : darkBase,
+                color: isLight ? "#000" : darkText,
+                borderTop: `1px solid ${isLight ? lightBorder : darkBorder}`,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "0 10px",
+                userSelect: "none",
+              }}
+            >
+              <span style={{ fontWeight: 600 }}>Console</span>
+              <button
+                onClick={() => setShowConsole(true)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "inherit",
+                  cursor: "pointer",
+                  fontSize: 14,
+                }}
+                title="Show console"
+              >
+                ▸
+              </button>
+            </div>
+          )}
+        </div>
+      </SandpackProvider>
     </div>
   );
 }
