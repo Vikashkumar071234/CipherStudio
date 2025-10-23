@@ -10,27 +10,35 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// CORS: allow localhost + your Vercel domain + all preview deployments
+// CORS
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true); // allow server-to-server, curl, health checks
+      if (!origin) return cb(null, true);
       const allowList = [
         "http://localhost:3000",
-        "https://cipher-studio-frontend.vercel.app", // <-- replace if your Vercel domain is different
+        "https://cipher-studio-frontend.vercel.app", // <-- replace with your Vercel domain if different
       ];
       const ok = allowList.includes(origin) || /\.vercel\.app$/.test(origin);
       cb(ok ? null : new Error("Not allowed by CORS"), ok);
     },
     methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: false, // not using cookies
+    credentials: false,
   })
 );
 
 app.use(express.json({ limit: "5mb" }));
 
+// Health/root
 app.get("/", (_req, res) => res.send("CipherStudio API running"));
+
+// Friendly API root
+app.get("/api", (_req, res) => {
+  res.json({ ok: true, hint: "Use /api/projects" });
+});
+
+// Projects routes
 app.use("/api/projects", projectRoutes);
 
 connectDB()
