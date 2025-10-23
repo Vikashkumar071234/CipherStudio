@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SandpackProvider,
   SandpackLayout,
@@ -8,6 +8,7 @@ import {
 } from "@codesandbox/sandpack-react";
 import { githubLight, sandpackDark } from "@codesandbox/sandpack-themes";
 import FileExplorer from "./FileExplorer";
+import { API_BASE } from "../config";
 
 /* ---------- Minimal React app files fed to Sandpack (/public + /src) ---------- */
 const PUBLIC_INDEX_HTML = `<!DOCTYPE html>
@@ -61,7 +62,7 @@ body { background: #ffffff; color: #111111; }
 const makeId = (n = 6) =>
   Array.from({ length: n }, () => "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 33)]).join("");
 
-// Normalize and PRUNE: keep only /public/* and /src/*; promote known root files; delete the rest
+// Normalize + prune: keep only /public/* and /src/*; promote known roots; delete the rest
 const normalizeFiles = (f) => {
   const out = { ...f };
 
@@ -75,16 +76,14 @@ const normalizeFiles = (f) => {
   promote("/index.css", "/src/index.css");
   promote("/index.html", "/public/index.html");
 
-  // Handle legacy styles.css -> /src/index.css
-  if (out["/styles.css"] && !out["/src/index.css"]) {
-    out["/src/index.css"] = out["/styles.css"];
-  }
+  // Legacy styles.css support
+  if (out["/styles.css"] && !out["/src/index.css"]) out["/src/index.css"] = out["/styles.css"];
   delete out["/styles.css"];
 
-  // Not needed in this Sandpack setup (deps come from customSetup)
+  // Not needed (deps come from customSetup)
   delete out["/package.json"];
 
-  // Ensure the canonical files exist
+  // Ensure canonical files exist
   if (!out["/public/index.html"]) out["/public/index.html"] = PUBLIC_INDEX_HTML;
   if (!out["/src/App.js"]) out["/src/App.js"] = SRC_APP_JS;
   if (!out["/src/index.js"]) out["/src/index.js"] = SRC_INDEX_JS;
@@ -96,7 +95,6 @@ const normalizeFiles = (f) => {
       delete out[path];
     }
   }
-
   return out;
 };
 
@@ -120,10 +118,8 @@ export default function IDE({ project }) {
       "/src/index.css": SRC_INDEX_CSS,
     })
   );
-
-  // One-time cleanup on mount (in case something injected extra files before)
   useEffect(() => {
-    setProviderFiles((prev) => normalizeFiles(prev));
+    setProviderFiles((prev) => normalizeFiles(prev)); // cleanup if anything slipped in
   }, []);
 
   // Sidebar info/toggles
@@ -135,22 +131,8 @@ export default function IDE({ project }) {
   const [theme, setTheme] = useState("light");
   const isLight = theme === "light";
   const palette = isLight
-    ? {
-        border: "#ddd",
-        sidebarBg: "#fafafa",
-        editorBorder: "#e5e7eb",
-        resizer: "#d1d5db",
-        bodyBg: "#ffffff",
-        bodyText: "#111111",
-      }
-    : {
-        border: "#303134",
-        sidebarBg: "#1e1e1e",
-        editorBorder: "#2a2a2a",
-        resizer: "#3a3a3a",
-        bodyBg: "#121212",
-        bodyText: "#e5e7eb",
-      };
+    ? { border: "#ddd", sidebarBg: "#fafafa", editorBorder: "#e5e7eb", resizer: "#d1d5db", bodyBg: "#ffffff", bodyText: "#111111" }
+    : { border: "#303134", sidebarBg: "#1e1e1e", editorBorder: "#2a2a2a", resizer: "#3a3a3a", bodyBg: "#121212", bodyText: "#e5e7eb" };
   const { border, sidebarBg, editorBorder, resizer, bodyBg, bodyText } = palette;
 
   // Editor/Preview split
@@ -212,11 +194,9 @@ export default function IDE({ project }) {
     []
   );
 
-  // Visible tabs: canonical + any other /src/* files, ordered nicely
+  // Visible tabs: canonical + any other /src/* files
   const visibleFiles = useMemo(() => {
-    const keys = Object.keys(providerFiles).filter(
-      (p) => p === "/public/index.html" || p.startsWith("/src/")
-    );
+    const keys = Object.keys(providerFiles).filter((p) => p === "/public/index.html" || p.startsWith("/src/"));
     const weight = new Map([
       ["/public/index.html", 0],
       ["/src/App.js", 1],
@@ -231,27 +211,62 @@ export default function IDE({ project }) {
   }, [providerFiles]);
 
   const baseOptions = useMemo(
-    () => ({
-      activeFile: "/src/App.js",
-      recompileMode: "delayed",
-      recompileDelay: 500,
-    }),
+    () => ({ activeFile: "/src/App.js", recompileMode: "delayed", recompileDelay: 500 }),
     []
   );
+  const sandpackOptions = useMemo(() => ({ ...baseOptions, visibleFiles }), [baseOptions, visibleFiles]);
 
-  const sandpackOptions = useMemo(
-    () => ({ ...baseOptions, visibleFiles }),
-    [baseOptions, visibleFiles]
-  );
+  /* ---------- Server projects wiring ---------- */
+  const [serverProjects, setServerProjects] = useState([]);
+  const [serverLoading, setServerLoading] = useState(false);
+  const [selectedServerId, setSelectedServerId] = useState("");
 
-  // File ops
+  const refreshServerProjects = useCallback(async () => {
+    if (!API_BASE) return alert("API_BASE is missing. Set REACT_APP_API_BASE in your env.");
+    setServerLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/projects`, { headers: { "Content-Type": "application/json" } });
+      if (!res.ok) throw new Error(`List failed: ${res.status}`);
+      const data = await res.json();
+      // Accept either {projects: []} or [] directly
+      const arr = Array.isArray(data) ? data : data.projects || [];
+      setServerProjects(arr);
+    } catch (e) {
+      console.error(e);
+      alert("Failed to load server projects. Check API_BASE, CORS, and API routes.");
+    } finally {
+      setServerLoading(false);
+    }
+  }, []);
+
+  const openServerProject = useCallback(async () => {
+    if (!selectedServerId) return;
+    try {
+      const res = await fetch(`${API_BASE}/projects/${selectedServerId}`, { headers: { "Content-Type": "application/json" } });
+      if (!res.ok) throw new Error(`Open failed: ${res.status}`);
+      const rec = await res.json();
+      const files = rec.files || {};
+      setProviderFiles(normalizeFiles(files));
+      setProjectName(rec.projectName || "MyProject");
+      setProjectId((rec._id || rec.id || makeId()).toUpperCase());
+      alert("Server project opened!");
+    } catch (e) {
+      console.error(e);
+      alert("Failed to open project. Check API response shape and CORS.");
+    }
+  }, [selectedServerId]);
+
+  // Optional: auto-load list on mount (comment out if you prefer manual)
+  useEffect(() => {
+    // refreshServerProjects();
+  }, [refreshServerProjects]);
+
+  /* ---------- File operations ---------- */
   const addFile = () => {
     const input = prompt("File name (e.g. App2.js or /src/utils/helper.js):");
     if (!input) return;
     const raw = input.trim();
-    const name = raw.includes("/")
-      ? raw.startsWith("/") ? raw : `/${raw}`
-      : `/src/${raw}`; // default to /src for bare names
+    const name = raw.includes("/") ? (raw.startsWith("/") ? raw : `/${raw}`) : `/src/${raw}`;
     setProviderFiles((prev) => {
       if (prev[name]) return (alert("File exists"), prev);
       return { ...normalizeFiles(prev), [name]: "// new file" };
@@ -262,7 +277,6 @@ export default function IDE({ project }) {
     setProviderFiles((prev) => {
       const u = { ...prev };
       delete u[name];
-      // Re-normalize after deletion to keep set clean
       return normalizeFiles(u);
     });
   };
@@ -272,16 +286,14 @@ export default function IDE({ project }) {
     const np = prompt("Rename to (name or full path):", oldName);
     if (!np) return;
     const trimmed = np.trim();
-    // If user typed just a name, keep same dir
     const next = trimmed.includes("/")
-      ? trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+      ? (trimmed.startsWith("/") ? trimmed : `/${trimmed}`)
       : `${oldPath.slice(0, oldPath.lastIndexOf("/"))}/${trimmed}`;
     if (next === oldPath) return;
     setProviderFiles((prev) => {
       if (prev[next]) return (alert("Name exists"), prev);
       const { [oldPath]: content, ...rest } = prev;
-      const updated = { ...rest, [next]: content ?? "" };
-      return normalizeFiles(updated); // normalize after rename
+      return normalizeFiles({ ...rest, [next]: content ?? "" });
     });
   };
 
@@ -322,19 +334,20 @@ export default function IDE({ project }) {
           toggleTheme={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
           autosave={autosave}
           toggleAutosave={() => setAutosave((s) => !s)}
+          /* Server projects props */
+          serverProjects={serverProjects}
+          serverLoading={serverLoading}
+          selectedServerId={selectedServerId}
+          onServerSelect={setSelectedServerId}
+          refreshServerProjects={refreshServerProjects}
+          openServerProject={openServerProject}
         />
       </div>
 
-      {/* Right column (editor + preview only, fills full height; no console rows) */}
+      {/* Right column (editor + preview only) */}
       <div
         ref={rightColRef}
-        style={{
-          position: "relative",
-          height: "100%",
-          display: "flex",
-          minHeight: 0,
-          background: isLight ? "#fff" : "#0d0f12",
-        }}
+        style={{ position: "relative", height: "100%", display: "flex", minHeight: 0, background: isLight ? "#fff" : "#0d0f12" }}
       >
         <SandpackProvider
           style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
@@ -346,15 +359,7 @@ export default function IDE({ project }) {
         >
           <SnapshotBridge />
 
-          {/* Editor + Preview */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: `${leftPct}% 6px 1fr`,
-              height: "100%",
-              minHeight: 0,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: `${leftPct}% 6px 1fr`, height: "100%", minHeight: 0 }}>
             {/* Editor */}
             <div style={{ minWidth: 0, minHeight: 0, borderRight: `1px solid ${editorBorder}`, overflow: "hidden" }}>
               <SandpackLayout style={{ height: "100%" }}>
@@ -391,9 +396,7 @@ function SnapshotBridge() {
   const snapshot = useFilesSnapshot();
   useEffect(() => {
     window.__cipherstudio_snapshot = snapshot;
-    return () => {
-      delete window.__cipherstudio_snapshot;
-    };
+    return () => { delete window.__cipherstudio_snapshot; };
   }, [snapshot]);
   return null;
 }
