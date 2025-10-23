@@ -61,18 +61,42 @@ body { background: #ffffff; color: #111111; }
 const makeId = (n = 6) =>
   Array.from({ length: n }, () => "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 33)]).join("");
 
+// Normalize and PRUNE: keep only /public/* and /src/*; promote known root files; delete the rest
 const normalizeFiles = (f) => {
   const out = { ...f };
-  // Move old root-level files under /src or /public
-  if (out["/App.js"] && !out["/src/App.js"]) { out["/src/App.js"] = out["/App.js"]; delete out["/App.js"]; }
-  if (out["/index.js"] && !out["/src/index.js"]) { out["/src/index.js"] = out["/index.js"]; delete out["/index.js"]; }
-  if (out["/index.css"] && !out["/src/index.css"]) { out["/src/index.css"] = out["/index.css"]; delete out["/index.css"]; }
-  if (out["/index.html"] && !out["/public/index.html"]) { out["/public/index.html"] = out["/index.html"]; delete out["/index.html"]; }
+
+  // Promote known root-level into canonical locations, then delete roots
+  const promote = (from, to) => {
+    if (out[from] && !out[to]) out[to] = out[from];
+    delete out[from];
+  };
+  promote("/App.js", "/src/App.js");
+  promote("/index.js", "/src/index.js");
+  promote("/index.css", "/src/index.css");
+  promote("/index.html", "/public/index.html");
+
+  // Handle legacy styles.css -> /src/index.css
+  if (out["/styles.css"] && !out["/src/index.css"]) {
+    out["/src/index.css"] = out["/styles.css"];
+  }
+  delete out["/styles.css"];
+
+  // Not needed in this Sandpack setup (deps come from customSetup)
+  delete out["/package.json"];
+
   // Ensure the canonical files exist
   if (!out["/public/index.html"]) out["/public/index.html"] = PUBLIC_INDEX_HTML;
   if (!out["/src/App.js"]) out["/src/App.js"] = SRC_APP_JS;
   if (!out["/src/index.js"]) out["/src/index.js"] = SRC_INDEX_JS;
   if (!out["/src/index.css"]) out["/src/index.css"] = SRC_INDEX_CSS;
+
+  // PRUNE: remove anything not under /public or /src
+  for (const path of Object.keys(out)) {
+    if (!path.startsWith("/public/") && !path.startsWith("/src/")) {
+      delete out[path];
+    }
+  }
+
   return out;
 };
 
@@ -96,6 +120,11 @@ export default function IDE({ project }) {
       "/src/index.css": SRC_INDEX_CSS,
     })
   );
+
+  // One-time cleanup on mount (in case something injected extra files before)
+  useEffect(() => {
+    setProviderFiles((prev) => normalizeFiles(prev));
+  }, []);
 
   // Sidebar info/toggles
   const [projectId, setProjectId] = useState(makeId());
@@ -157,11 +186,11 @@ export default function IDE({ project }) {
     };
   }, []);
 
-  // Files for FileExplorer (only /public/index.html + /src/*)
+  // Files for FileExplorer (only /public/* + /src/*)
   const filesForExplorer = useMemo(() => {
     const out = {};
     Object.entries(providerFiles).forEach(([p, code]) => {
-      if (p === "/public/index.html" || p.startsWith("/src/")) out[p] = code;
+      if (p.startsWith("/public/") || p.startsWith("/src/")) out[p] = code;
     });
     return out;
   }, [providerFiles]);
@@ -174,7 +203,7 @@ export default function IDE({ project }) {
     setProjectId(project.id || makeId());
   }, [project]);
 
-  // IMPORTANT: keep Sandpack configuration stable across renders
+  // Keep Sandpack configuration stable across renders
   const sandpackSetup = useMemo(
     () => ({
       entry: "/src/index.js",
@@ -183,40 +212,76 @@ export default function IDE({ project }) {
     []
   );
 
-  const sandpackOptions = useMemo(
+  // Visible tabs: canonical + any other /src/* files, ordered nicely
+  const visibleFiles = useMemo(() => {
+    const keys = Object.keys(providerFiles).filter(
+      (p) => p === "/public/index.html" || p.startsWith("/src/")
+    );
+    const weight = new Map([
+      ["/public/index.html", 0],
+      ["/src/App.js", 1],
+      ["/src/index.js", 2],
+      ["/src/index.css", 3],
+    ]);
+    return keys.sort((a, b) => {
+      const wa = weight.has(a) ? weight.get(a) : 99;
+      const wb = weight.has(b) ? weight.get(b) : 99;
+      return wa === wb ? a.localeCompare(b) : wa - wb;
+    });
+  }, [providerFiles]);
+
+  const baseOptions = useMemo(
     () => ({
       activeFile: "/src/App.js",
       recompileMode: "delayed",
       recompileDelay: 500,
-      // Optionally list visible files to keep tabs order stable
-      // visibleFiles: ["/public/index.html", "/src/App.js", "/src/index.js", "/src/index.css"],
     }),
     []
   );
 
+  const sandpackOptions = useMemo(
+    () => ({ ...baseOptions, visibleFiles }),
+    [baseOptions, visibleFiles]
+  );
+
   // File ops
   const addFile = () => {
-    const n = prompt("File name (e.g. /src/NewFile.js):");
-    if (!n) return;
-    const name = n.startsWith("/") ? n : `/${n}`;
-    if (providerFiles[name]) return alert("File exists");
-    setProviderFiles((prev) => ({ ...prev, [name]: "// new file" }));
+    const input = prompt("File name (e.g. App2.js or /src/utils/helper.js):");
+    if (!input) return;
+    const raw = input.trim();
+    const name = raw.includes("/")
+      ? raw.startsWith("/") ? raw : `/${raw}`
+      : `/src/${raw}`; // default to /src for bare names
+    setProviderFiles((prev) => {
+      if (prev[name]) return (alert("File exists"), prev);
+      return { ...normalizeFiles(prev), [name]: "// new file" };
+    });
   };
+
   const deleteFile = (name) => {
     setProviderFiles((prev) => {
       const u = { ...prev };
       delete u[name];
-      return u;
+      // Re-normalize after deletion to keep set clean
+      return normalizeFiles(u);
     });
   };
+
   const renameFile = (oldPath) => {
-    const np = prompt("Rename file to:", oldPath);
-    if (!np || np === oldPath) return;
-    const next = np.startsWith("/") ? np : `/${np}`;
+    const oldName = oldPath.slice(oldPath.lastIndexOf("/") + 1);
+    const np = prompt("Rename to (name or full path):", oldName);
+    if (!np) return;
+    const trimmed = np.trim();
+    // If user typed just a name, keep same dir
+    const next = trimmed.includes("/")
+      ? trimmed.startsWith("/") ? trimmed : `/${trimmed}`
+      : `${oldPath.slice(0, oldPath.lastIndexOf("/"))}/${trimmed}`;
+    if (next === oldPath) return;
     setProviderFiles((prev) => {
       if (prev[next]) return (alert("Name exists"), prev);
       const { [oldPath]: content, ...rest } = prev;
-      return { ...rest, [next]: content ?? "" };
+      const updated = { ...rest, [next]: content ?? "" };
+      return normalizeFiles(updated); // normalize after rename
     });
   };
 
@@ -275,8 +340,8 @@ export default function IDE({ project }) {
           style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
           template="react"
           files={providerFiles}
-          customSetup={sandpackSetup}     // memoized
-          options={sandpackOptions}       // memoized
+          customSetup={sandpackSetup}
+          options={sandpackOptions}
           theme={isLight ? githubLight : sandpackDark}
         >
           <SnapshotBridge />
