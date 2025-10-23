@@ -1,46 +1,58 @@
-CipherStudio is an online code editor that allows users to create, edit, and manage coding projects efficiently. It supports multiple programming languages and provides real-time previews, console output, and project management features in a clean, user-friendly interface.
+CipherStudio
+Online code editor to create, edit, and manage projects with real‑time preview and server persistence.
 
-Features
+Live App: https://your-vercel-frontend-url.vercel.app
+API Base: https://cipherstudio-backend-0hfm.onrender.com/api
 
-* Project Management
- 1. Create, save, and manage multiple projects.
- 2. Organize and edit multiple files within each project.
- 3. Persistent storage using MongoDB.
-    
-* Code Editing
-  1. Syntax-highlighted editor for HTML, CSS, JavaScript, and more.
-  2. Real-time code preview.
-  3. File management (add, edit, delete files).
-     
-* Console Output
- 1. View runtime messages and errors directly in the app.
- 2. Helps in quick debugging.
-    
-* Theming
- 1. Switch between light (GitHub Light) and dark (Dracula) themes.
- 2. Responsive and modern UI design.
 
-Installation :- 
-1. Backend
-   a. cd backend
-   b. npm install
-   c. npm run dev
-   
-3. Frontend
-   a. cd frontend
-   b. npm install
-   c. npm start
+****Features****
+Projects: create/open, add/rename/delete files, save locally or to server (MongoDB)
+Editor: syntax highlighting, tabs, real-time preview (HTML/CSS/JS/React)
+UI: light/dark themes, resizable editor/preview
+Server panel: list, open, save (POST/PUT), delete projects
 
-*Technologies Used*
-
-Frontend: React, Sandpack, JavaScript, CSS
+****Tech Stack****
+Frontend: React + Sandpack
 Backend: Node.js, Express.js
-Database: MongoDB, Mongoose
-Version Control: Git, GitHub
+DB: MongoDB (Mongoose)
+Hosting: Vercel (frontend), Render (backend)
 
-*Future Enhancements*
+****Monorepo****
+frontend/ — React app
+backend/ — Express API + Mongoose
+Quick Start
 
-Real-time collaborative coding.
-User authentication and profiles
-Support for more programming languages.
-File upload/download and project export functionality.
+****Backend****
+cd backend
+npm install
+.env:
+    MONGO_URL=your-mongodb-uri
+    PORT=3001 (optional locally)
+npm run dev
+Check: http://localhost:3001/api/projects → []
+
+****Frontend****
+cd frontend
+npm install
+Create frontend/src/config.js:
+   export const API_BASE = (process.env.REACT_APP_API_BASE || "http://localhost:3001/api");
+Start:
+   Windows: set REACT_APP_API_BASE=http://localhost:3001/api && npm start
+   macOS/Linux: REACT_APP_API_BASE=http://localhost:3001/api npm start
+
+****Environment (Production)****
+Vercel (frontend): REACT_APP_API_BASE=https://cipherstudio-backend-0hfm.onrender.com/api
+Render (backend): MONGO_URL=your-mongodb-uri
+Optional (Node 22): NODE_OPTIONS=--openssl-legacy-provider
+
+****API (Projects)****
+GET /projects → [{ _id, projectName }]
+POST /projects → { id } (body: { projectName?, files: { "/src/App.js": "..." } })
+GET /projects/:id → { id, projectName, files }
+PUT /projects/:id → { ok: true }
+DELETE /projects/:id → { ok: true }
+
+****Tips****
+“Save Project” = localStorage (offline/drafts)
+“Save to Server” = MongoDB (shared/cross‑device)
+If you see “Cannot GET /api”, use /api/projects (that’s expected)
