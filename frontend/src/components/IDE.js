@@ -1,520 +1,334 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   SandpackProvider,
   SandpackLayout,
   SandpackCodeEditor,
   SandpackPreview,
-  SandpackConsole,
   useSandpack,
 } from "@codesandbox/sandpack-react";
-import { githubLight, dracula } from "@codesandbox/sandpack-themes";
+import { githubLight, sandpackDark } from "@codesandbox/sandpack-themes";
 import FileExplorer from "./FileExplorer";
 
-/* ========== Short easy project IDs ========== */
-function makeId(len = 6) {
-  const ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // skip confusing chars
-  let out = "";
-  for (let i = 0; i < len; i++) out += ALPHABET[Math.floor(Math.random() * ALPHABET.length)];
+/* ---------- Minimal React app files fed to Sandpack (/public + /src) ---------- */
+const PUBLIC_INDEX_HTML = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CipherStudio</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>`;
+
+const SRC_APP_JS = `
+export default function App() {
+  return (
+    <div style={{
+      position: "absolute",
+      inset: 0,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexDirection: "column",
+      fontFamily: "Segoe UI, Roboto, sans-serif",
+      textAlign: "center",
+      backgroundColor: "#ffffff",
+      color: "#111111"
+    }}>
+      <h1>Hello from CipherStudio!</h1>
+    </div>
+  );
+}
+`;
+
+const SRC_INDEX_JS = `
+import React from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./index.css";
+const root = createRoot(document.getElementById("root"));
+root.render(<App />);
+`;
+
+const SRC_INDEX_CSS = `
+html, body, #root { height: 100%; margin: 0; }
+body { background: #ffffff; color: #111111; }
+`;
+
+/* ---------- Helpers ---------- */
+const makeId = (n = 6) =>
+  Array.from({ length: n }, () => "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 33)]).join("");
+
+const normalizeFiles = (f) => {
+  const out = { ...f };
+  // Move old root-level files under /src or /public
+  if (out["/App.js"] && !out["/src/App.js"]) { out["/src/App.js"] = out["/App.js"]; delete out["/App.js"]; }
+  if (out["/index.js"] && !out["/src/index.js"]) { out["/src/index.js"] = out["/index.js"]; delete out["/index.js"]; }
+  if (out["/index.css"] && !out["/src/index.css"]) { out["/src/index.css"] = out["/index.css"]; delete out["/index.css"]; }
+  if (out["/index.html"] && !out["/public/index.html"]) { out["/public/index.html"] = out["/index.html"]; delete out["/index.html"]; }
+  // Ensure the canonical files exist
+  if (!out["/public/index.html"]) out["/public/index.html"] = PUBLIC_INDEX_HTML;
+  if (!out["/src/App.js"]) out["/src/App.js"] = SRC_APP_JS;
+  if (!out["/src/index.js"]) out["/src/index.js"] = SRC_INDEX_JS;
+  if (!out["/src/index.css"]) out["/src/index.css"] = SRC_INDEX_CSS;
   return out;
-}
-function genEasyId() {
-  const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
-  let id;
-  do id = makeId(6);
-  while (all[id]);
-  return id;
-}
+};
 
-/* ========== Bridge: collect live files from Sandpack ========== */
-function LiveFilesBridge({ bind }) {
+/* Snapshot helper (for Save) – gets freshest files from the live sandbox */
+function useFilesSnapshot() {
   const { sandpack } = useSandpack();
-  // Provide a collector that returns the latest code in the editor
-  useEffect(() => {
-    bind(() => {
-      const out = {};
-      Object.keys(sandpack.files).forEach((path) => {
-        out[path] = sandpack.files[path].code;
-      });
-      return out;
-    });
-  }, [bind, sandpack.files, sandpack.activeFile]);
-  return null;
+  return React.useCallback(() => {
+    const snap = {};
+    for (const [path, file] of Object.entries(sandpack.files)) snap[path] = file.code;
+    return snap;
+  }, [sandpack.files]);
 }
 
-export default function IDE() {
-  // Palettes
-  const darkBase = "#0f0f0f";
-  const darkBorder = "#303134";
-  const darkPanel = "#1e1e1e";
-  const darkEditor = "#202124";
-  const darkText = "#e0e0e0";
+export default function IDE({ project }) {
+  // Files fed to SandpackProvider
+  const [providerFiles, setProviderFiles] = useState(() =>
+    normalizeFiles({
+      "/public/index.html": PUBLIC_INDEX_HTML,
+      "/src/App.js": SRC_APP_JS,
+      "/src/index.js": SRC_INDEX_JS,
+      "/src/index.css": SRC_INDEX_CSS,
+    })
+  );
 
-  const lightBase = "#ffffff";
-  const lightBorder = "#ddd";
-  const lightPanel = "#fafafa";
-  const lightText = "#000000";
-
-  // CSS inside the sandbox (preview) — ALWAYS white
-  const staticCss = `
-    :root { --app-bg: #ffffff; --app-text: #000000; }
-    html, body, #root {
-      background-color: var(--app-bg) !important;
-      color: var(--app-text) !important;
-      height: 100%;
-      margin: 0;
-    }
-    * { color: inherit !important; }
-  `;
-
-  const appJs = `
-    export default function App() {
-      return (
-        <div
-          style={{
-            backgroundColor: "var(--app-bg)",
-            color: "var(--app-text)",
-            position: "absolute",
-            top: 0, left: 0, right: 0, bottom: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexDirection: "column",
-            fontFamily: "Segoe UI, Roboto, sans-serif",
-            textAlign: "center",
-          }}
-        >
-          <h1>Hello from CipherStudio!</h1>
-          <p>The theme is synced with the IDE.</p>
-        </div>
-      );
-    }
-  `;
-
-  const indexJs = `
-    import React from "react";
-    import { createRoot } from "react-dom/client";
-    import App from "./App";
-    import "./index.css";
-    const root = createRoot(document.getElementById("root"));
-    root.render(<App />);
-  `;
-
-  // Initial theme + files
-  const initialTheme = localStorage.getItem("cipherstudio:theme") || "light";
-  const [files, setFiles] = useState({
-    "/App.js": appJs,
-    "/index.js": indexJs,
-    "/index.css": staticCss, // ALWAYS white inside sandbox
-  });
-
-  const [projectId, setProjectId] = useState(() => genEasyId());
+  // Sidebar info/toggles
+  const [projectId, setProjectId] = useState(makeId());
   const [projectName, setProjectName] = useState("MyProject");
-  const [theme, setTheme] = useState(initialTheme);
+  const [autosave, setAutosave] = useState(true);
+
+  // Theme
+  const [theme, setTheme] = useState("light");
   const isLight = theme === "light";
+  const palette = isLight
+    ? {
+        border: "#ddd",
+        sidebarBg: "#fafafa",
+        editorBorder: "#e5e7eb",
+        resizer: "#d1d5db",
+        bodyBg: "#ffffff",
+        bodyText: "#111111",
+      }
+    : {
+        border: "#303134",
+        sidebarBg: "#1e1e1e",
+        editorBorder: "#2a2a2a",
+        resizer: "#3a3a3a",
+        bodyBg: "#121212",
+        bodyText: "#e5e7eb",
+      };
+  const { border, sidebarBg, editorBorder, resizer, bodyBg, bodyText } = palette;
 
-  // This ref holds a function that returns the live files from Sandpack
-  const liveFilesCollectorRef = useRef(null);
+  // Editor/Preview split
+  const [leftPct, setLeftPct] = useState(55);
+  const vDragging = useRef(false);
+  const rightColRef = useRef(null);
 
-  // Collapsible console
-  const [showConsole, setShowConsole] = useState(
-    localStorage.getItem("cipherstudio:console") !== "hidden"
-  );
-  const [consoleHeight, setConsoleHeight] = useState(150);
+  // Apply theme to page
   useEffect(() => {
-    localStorage.setItem("cipherstudio:console", showConsole ? "shown" : "hidden");
-  }, [showConsole]);
+    document.body.style.background = bodyBg;
+    document.body.style.color = bodyText;
+    document.body.style.overflow = "hidden";
+  }, [bodyBg, bodyText]);
 
-  // Autosave (interval over live files)
-  const [autosave, setAutosave] = useState(
-    JSON.parse(localStorage.getItem("cipherstudio:autosave") || "true")
-  );
-  const toggleAutosave = () => {
-    const next = !autosave;
-    setAutosave(next);
-    localStorage.setItem("cipherstudio:autosave", JSON.stringify(next));
-  };
+  // Drag handlers (vertical only)
   useEffect(() => {
-    if (!autosave) return;
-    const id = setInterval(() => {
-      const collect = liveFilesCollectorRef.current;
-      const latest = collect ? collect() : files;
-      const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
-      all[projectId.toUpperCase()] = { projectName, files: latest };
-      localStorage.setItem("cipherstudio:projects", JSON.stringify(all));
-    }, 2000);
-    return () => clearInterval(id);
-  }, [autosave, projectId, projectName, files]);
+    const onMove = (e) => {
+      if (vDragging.current && rightColRef.current) {
+        const r = rightColRef.current.getBoundingClientRect();
+        setLeftPct(Math.max(20, Math.min(80, ((e.clientX - r.left) / r.width) * 100)));
+      }
+    };
+    const onUp = () => {
+      vDragging.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
 
-  // Apply theme to outer page
-  useEffect(() => {
-    document.body.style.background = isLight ? lightBase : darkBase;
-    document.body.style.color = isLight ? lightText : darkText;
-  }, [isLight]);
-
-  const toggleTheme = () => {
-    const next = isLight ? "dark" : "light";
-    setTheme(next);
-    localStorage.setItem("cipherstudio:theme", next);
-  };
-
-  // Project helpers — SAVE/LOAD from live files
-  const saveProject = () => {
-    const collect = liveFilesCollectorRef.current;
-    const latest = collect ? collect() : files;
-    const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
-    const id = projectId.toUpperCase();
-    all[id] = { projectName, files: latest };
-    localStorage.setItem("cipherstudio:projects", JSON.stringify(all));
-    alert(`Project saved!\nID: ${id}`);
-  };
-
-  const loadProject = () => {
-    const raw = prompt("Enter project ID:");
-    const id = raw?.trim().toUpperCase();
-    if (!id) return;
-    const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
-    if (all[id]) {
-      const loaded = { ...all[id].files };
-      if (!loaded["/index.css"]) loaded["/index.css"] = staticCss; // ensure white preview
-      setFiles(loaded);
-      setProjectName(all[id].projectName);
-      setProjectId(id); // reflect loaded id in sidebar
-      alert("Project loaded!");
-    } else {
-      alert("Project not found!");
-    }
-  };
-
-  const newProject = () => {
-    const id = genEasyId();
-    setProjectId(id);
-    setProjectName("MyProject");
-    setFiles({
-      "/App.js": appJs,
-      "/index.js": indexJs,
-      "/index.css": staticCss,
+  // Files for FileExplorer (only /public/index.html + /src/*)
+  const filesForExplorer = useMemo(() => {
+    const out = {};
+    Object.entries(providerFiles).forEach(([p, code]) => {
+      if (p === "/public/index.html" || p.startsWith("/src/")) out[p] = code;
     });
-    alert(`New project created.\nID: ${id}`);
-  };
+    return out;
+  }, [providerFiles]);
 
+  // Load external project (normalize once)
+  useEffect(() => {
+    if (!project) return;
+    setProviderFiles(normalizeFiles(project.files || {}));
+    setProjectName(project.projectName || "MyProject");
+    setProjectId(project.id || makeId());
+  }, [project]);
+
+  // IMPORTANT: keep Sandpack configuration stable across renders
+  const sandpackSetup = useMemo(
+    () => ({
+      entry: "/src/index.js",
+      dependencies: { react: "18.2.0", "react-dom": "18.2.0" },
+    }),
+    []
+  );
+
+  const sandpackOptions = useMemo(
+    () => ({
+      activeFile: "/src/App.js",
+      recompileMode: "delayed",
+      recompileDelay: 500,
+      // Optionally list visible files to keep tabs order stable
+      // visibleFiles: ["/public/index.html", "/src/App.js", "/src/index.js", "/src/index.css"],
+    }),
+    []
+  );
+
+  // File ops
   const addFile = () => {
-    const n = prompt("File name (e.g. /NewFile.js):");
-    if (n && !files[n]) setFiles({ ...files, [n]: "// new file content" });
+    const n = prompt("File name (e.g. /src/NewFile.js):");
+    if (!n) return;
+    const name = n.startsWith("/") ? n : `/${n}`;
+    if (providerFiles[name]) return alert("File exists");
+    setProviderFiles((prev) => ({ ...prev, [name]: "// new file" }));
   };
   const deleteFile = (name) => {
-    const updated = { ...files };
-    delete updated[name];
-    setFiles(updated);
+    setProviderFiles((prev) => {
+      const u = { ...prev };
+      delete u[name];
+      return u;
+    });
   };
   const renameFile = (oldPath) => {
-    const newPath = prompt("Rename file to:", oldPath);
-    if (!newPath || newPath === oldPath) return;
-    setFiles((prev) => {
-      if (prev[newPath]) {
-        alert("A file with that name already exists.");
-        return prev;
-      }
+    const np = prompt("Rename file to:", oldPath);
+    if (!np || np === oldPath) return;
+    const next = np.startsWith("/") ? np : `/${np}`;
+    setProviderFiles((prev) => {
+      if (prev[next]) return (alert("Name exists"), prev);
       const { [oldPath]: content, ...rest } = prev;
-      return { ...rest, [newPath]: content ?? "// empty file" };
+      return { ...rest, [next]: content ?? "" };
     });
   };
 
-  // Sidebar responsive/collapsible
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 900px)");
-    const update = () => setSidebarOpen(!mq.matches);
-    update();
-    if (mq.addEventListener) mq.addEventListener("change", update);
-    else mq.addListener(update);
-    return () => {
-      if (mq.removeEventListener) mq.removeEventListener("change", update);
-      else mq.removeListener(update);
-    };
-  }, []);
-
-  // Resizable Editor | Preview (vertical)
-  const [leftSplitPct, setLeftSplitPct] = useState(50);
-  const topRowRef = useRef(null);
-  const vDragging = useRef(false);
-  const onVDown = (e) => {
-    vDragging.current = true;
-    e.preventDefault();
-  };
-  const onVMove = (e) => {
-    if (!vDragging.current || !topRowRef.current) return;
-    const rect = topRowRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const pct = Math.max(20, Math.min(80, (x / rect.width) * 100));
-    setLeftSplitPct(pct);
-  };
-  const onVUp = () => (vDragging.current = false);
-  useEffect(() => {
-    window.addEventListener("mousemove", onVMove);
-    window.addEventListener("mouseup", onVUp);
-    return () => {
-      window.removeEventListener("mousemove", onVMove);
-      window.removeEventListener("mouseup", onVUp);
-    };
-  }, []);
-
-  // Resizable Console (horizontal)
-  const colRef = useRef(null);
-  const hDragging = useRef(false);
-  const resizerH = 6;
-  const consoleHeaderH = 32;
-
-  const onHDown = (e) => {
-    hDragging.current = true;
-    e.preventDefault();
-  };
-  const onHMove = (e) => {
-    if (!hDragging.current || !colRef.current) return;
-    const rect = colRef.current.getBoundingClientRect();
-    const topUsed = e.clientY - rect.top;
-    const newH = Math.max(0, Math.min(rect.height - 80, rect.height - topUsed - consoleHeaderH));
-    setConsoleHeight(newH);
-  };
-  const onHUp = () => (hDragging.current = false);
-  useEffect(() => {
-    window.addEventListener("mousemove", onHMove);
-    window.addEventListener("mouseup", onHUp);
-    return () => {
-      window.removeEventListener("mousemove", onHMove);
-      window.removeEventListener("mouseup", onHUp);
-    };
-  }, []);
-
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: sidebarOpen ? "250px 1fr" : "0 1fr",
-        height: "100vh",
-        backgroundColor: isLight ? lightBase : darkBase,
-        color: isLight ? lightText : darkText,
-        transition:
-          "grid-template-columns 0.2s ease, background-color 0.3s ease, color 0.3s ease",
-      }}
-    >
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", height: "100vh" }}>
       {/* Sidebar */}
-      <div style={{ overflow: "hidden" }}>
-        {sidebarOpen && (
-          <FileExplorer
-            files={files}
-            addFile={addFile}
-            deleteFile={deleteFile}
-            renameFile={renameFile}
-            projectName={projectName}
-            projectId={projectId}
-            saveProject={saveProject}
-            loadProject={loadProject}
-            theme={theme}
-            toggleTheme={toggleTheme}
-            autosave={autosave}
-            toggleAutosave={toggleAutosave}
-            newProject={newProject}
-          />
-        )}
+      <div style={{ borderRight: `1px solid ${border}`, background: sidebarBg, overflow: "auto" }}>
+        <FileExplorer
+          files={filesForExplorer}
+          addFile={addFile}
+          deleteFile={deleteFile}
+          renameFile={renameFile}
+          projectName={projectName}
+          projectId={projectId}
+          saveProject={() => {
+            const saveFromLive = window.__cipherstudio_snapshot;
+            const latest = typeof saveFromLive === "function" ? saveFromLive() : providerFiles;
+            const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
+            const id = (projectId || makeId()).toUpperCase();
+            all[id] = { projectName, files: normalizeFiles(latest) };
+            localStorage.setItem("cipherstudio:projects", JSON.stringify(all));
+            setProjectId(id);
+            alert(`Saved! ID: ${id}`);
+          }}
+          loadProject={() => {
+            const raw = prompt("Enter project ID:");
+            const id = raw?.trim().toUpperCase();
+            if (!id) return;
+            const all = JSON.parse(localStorage.getItem("cipherstudio:projects") || "{}");
+            const rec = all[id];
+            if (!rec) return alert("Not found");
+            setProviderFiles(normalizeFiles(rec.files || {}));
+            setProjectName(rec.projectName || "MyProject");
+            setProjectId(id);
+            alert("Loaded!");
+          }}
+          theme={theme}
+          toggleTheme={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+          autosave={autosave}
+          toggleAutosave={() => setAutosave((s) => !s)}
+        />
       </div>
 
-      {/* Right panel + hamburger */}
-      <div style={{ position: "relative" }}>
-        <button
-          onClick={() => setSidebarOpen((s) => !s)}
-          style={{
-            position: "absolute",
-            top: 8,
-            left: 8,
-            zIndex: 2,
-            background: isLight ? "#eee" : "#2a2a2a",
-            color: isLight ? "#000" : "#fff",
-            border: `1px solid ${isLight ? "#ccc" : "#444"}`,
-            borderRadius: 4,
-            padding: "4px 8px",
-            cursor: "pointer",
-          }}
-          title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+      {/* Right column (editor + preview only, fills full height; no console rows) */}
+      <div
+        ref={rightColRef}
+        style={{
+          position: "relative",
+          height: "100%",
+          display: "flex",
+          minHeight: 0,
+          background: isLight ? "#fff" : "#0d0f12",
+        }}
+      >
+        <SandpackProvider
+          style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+          template="react"
+          files={providerFiles}
+          customSetup={sandpackSetup}     // memoized
+          options={sandpackOptions}       // memoized
+          theme={isLight ? githubLight : sandpackDark}
         >
-          ☰
-        </button>
+          <SnapshotBridge />
 
-       <SandpackProvider
-template="react"
-files={files}
-theme={isLight ? githubLight : dracula}
->
-          {/* Bind live file collector */}
-          <LiveFilesBridge bind={(collector) => (liveFilesCollectorRef.current = collector)} />
-
-          {/* Top row + resizer + console */}
-          <div ref={colRef} style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-            {/* Attach ref to wrapper for sizing */}
-            <div
-              ref={topRowRef}
-              style={{
-                flex: showConsole
-                  ? `0 0 calc(100% - ${resizerH + consoleHeaderH + consoleHeight}px)`
-                  : "1",
-                minHeight: 0,
-                display: "flex",
-                flexDirection: "row",
-              }}
-            >
-              <SandpackLayout
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  flexDirection: "row",
-                  backgroundColor: isLight ? lightPanel : darkPanel,
-                  borderLeft: `1px solid ${isLight ? lightBorder : darkBorder}`,
-                  transition: "background-color 0.3s ease",
-                }}
-              >
-                {/* Editor */}
-                <div
-                  style={{
-                    width: `${leftSplitPct}%`,
-                    minWidth: 0,
-                    minHeight: 0,
-                    borderRight: `1px solid ${isLight ? lightBorder : darkBorder}`,
-                    backgroundColor: isLight ? lightPanel : darkEditor,
-                  }}
-                >
-                  <SandpackCodeEditor
-                    showTabs
-                    showLineNumbers
-                    style={{ height: "100%", backgroundColor: "transparent" }}
-                  />
-                </div>
-
-                {/* Vertical resizer */}
-                <div
-                  onMouseDown={onVDown}
-                  style={{
-                    width: 6,
-                    cursor: "col-resize",
-                    backgroundColor: isLight ? lightBorder : darkBorder,
-                  }}
-                  title="Drag to resize editor/output"
-                />
-
-                {/* Preview */}
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    minHeight: 0,
-                    display: "flex",
-                    backgroundColor: isLight ? lightPanel : darkEditor,
-                    color: isLight ? lightText : darkText,
-                  }}
-                >
-                  <SandpackPreview
-                    actions={["refresh"]}
-                    style={{
-                      flex: 1,
-                      backgroundColor: "var(--app-bg)", // always white from /index.css
-                      color: "var(--app-text)",
-                    }}
-                  />
-                </div>
+          {/* Editor + Preview */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: `${leftPct}% 6px 1fr`,
+              height: "100%",
+              minHeight: 0,
+            }}
+          >
+            {/* Editor */}
+            <div style={{ minWidth: 0, minHeight: 0, borderRight: `1px solid ${editorBorder}`, overflow: "hidden" }}>
+              <SandpackLayout style={{ height: "100%" }}>
+                <SandpackCodeEditor style={{ height: "100%" }} showTabs showLineNumbers />
               </SandpackLayout>
             </div>
 
-            {/* Horizontal resizer */}
-            {showConsole && (
-              <div
-                onMouseDown={onHDown}
-                style={{
-                  height: 6,
-                  backgroundColor: isLight ? lightBorder : darkBorder,
-                  cursor: "ns-resize",
-                }}
-                title="Drag to resize console height"
-              />
-            )}
-
-            {/* Console */}
+            {/* Vertical resizer */}
             <div
-              style={{
-                display: showConsole ? "block" : "none",
-                backgroundColor: isLight ? "#f7f7f7" : darkBase,
-                color: isLight ? "#000" : darkText,
-                borderTop: `1px solid ${isLight ? lightBorder : darkBorder}`,
-                height: showConsole ? 32 + consoleHeight : 0,
+              onMouseDown={() => {
+                vDragging.current = true;
+                document.body.style.cursor = "col-resize";
+                document.body.style.userSelect = "none";
               }}
-            >
-              <div
-                style={{
-                  height: 32,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "0 10px",
-                  userSelect: "none",
-                }}
-              >
-                <span style={{ fontWeight: 600 }}>Console</span>
-                <button
-                  onClick={() => setShowConsole((s) => !s)}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "inherit",
-                    cursor: "pointer",
-                    fontSize: 14,
-                  }}
-                  title="Hide console"
-                >
-                  ▾
-                </button>
-              </div>
+              style={{ width: 6, background: resizer, cursor: "col-resize" }}
+              title="Drag to resize editor/preview"
+            />
 
-              <div style={{ height: consoleHeight }}>
-                <SandpackConsole
-                  style={{
-                    height: "100%",
-                    backgroundColor: "transparent",
-                    color: "inherit",
-                  }}
-                />
-              </div>
+            {/* Preview */}
+            <div style={{ minWidth: 0, minHeight: 0, background: isLight ? "#fff" : "#0d0f12" }}>
+              <SandpackLayout style={{ height: "100%" }}>
+                <SandpackPreview style={{ height: "100%" }} actions={["refresh"]} />
+              </SandpackLayout>
             </div>
-
-            {!showConsole && (
-              <div
-                style={{
-                  height: 32,
-                  backgroundColor: isLight ? "#f7f7f7" : darkBase,
-                  color: isLight ? "#000" : darkText,
-                  borderTop: `1px solid ${isLight ? lightBorder : darkBorder}`,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "0 10px",
-                  userSelect: "none",
-                }}
-              >
-                <span style={{ fontWeight: 600 }}>Console</span>
-                <button
-                  onClick={() => setShowConsole(true)}
-                  style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "inherit",
-                    cursor: "pointer",
-                    fontSize: 14,
-                  }}
-                  title="Show console"
-                >
-                  ▸
-                </button>
-              </div>
-            )}
           </div>
         </SandpackProvider>
       </div>
     </div>
   );
+}
+
+/* Bridge: expose live snapshot to outer Save button via window */
+function SnapshotBridge() {
+  const snapshot = useFilesSnapshot();
+  useEffect(() => {
+    window.__cipherstudio_snapshot = snapshot;
+    return () => {
+      delete window.__cipherstudio_snapshot;
+    };
+  }, [snapshot]);
+  return null;
 }
