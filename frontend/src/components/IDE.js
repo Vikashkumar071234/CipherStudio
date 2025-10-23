@@ -66,7 +66,6 @@ const makeId = (n = 6) =>
 const normalizeFiles = (f) => {
   const out = { ...f };
 
-  // Promote known root-level into canonical locations, then delete roots
   const promote = (from, to) => {
     if (out[from] && !out[to]) out[to] = out[from];
     delete out[from];
@@ -76,20 +75,15 @@ const normalizeFiles = (f) => {
   promote("/index.css", "/src/index.css");
   promote("/index.html", "/public/index.html");
 
-  // Legacy styles.css support
   if (out["/styles.css"] && !out["/src/index.css"]) out["/src/index.css"] = out["/styles.css"];
   delete out["/styles.css"];
-
-  // Not needed (deps come from customSetup)
   delete out["/package.json"];
 
-  // Ensure canonical files exist
   if (!out["/public/index.html"]) out["/public/index.html"] = PUBLIC_INDEX_HTML;
   if (!out["/src/App.js"]) out["/src/App.js"] = SRC_APP_JS;
   if (!out["/src/index.js"]) out["/src/index.js"] = SRC_INDEX_JS;
   if (!out["/src/index.css"]) out["/src/index.css"] = SRC_INDEX_CSS;
 
-  // PRUNE: remove anything not under /public or /src
   for (const path of Object.keys(out)) {
     if (!path.startsWith("/public/") && !path.startsWith("/src/")) {
       delete out[path];
@@ -109,7 +103,6 @@ function useFilesSnapshot() {
 }
 
 export default function IDE({ project }) {
-  // Files fed to SandpackProvider
   const [providerFiles, setProviderFiles] = useState(() =>
     normalizeFiles({
       "/public/index.html": PUBLIC_INDEX_HTML,
@@ -119,15 +112,13 @@ export default function IDE({ project }) {
     })
   );
   useEffect(() => {
-    setProviderFiles((prev) => normalizeFiles(prev)); // cleanup if anything slipped in
+    setProviderFiles((prev) => normalizeFiles(prev));
   }, []);
 
-  // Sidebar info/toggles
   const [projectId, setProjectId] = useState(makeId());
   const [projectName, setProjectName] = useState("MyProject");
   const [autosave, setAutosave] = useState(true);
 
-  // Theme
   const [theme, setTheme] = useState("light");
   const isLight = theme === "light";
   const palette = isLight
@@ -135,19 +126,16 @@ export default function IDE({ project }) {
     : { border: "#303134", sidebarBg: "#1e1e1e", editorBorder: "#2a2a2a", resizer: "#3a3a3a", bodyBg: "#121212", bodyText: "#e5e7eb" };
   const { border, sidebarBg, editorBorder, resizer, bodyBg, bodyText } = palette;
 
-  // Editor/Preview split
   const [leftPct, setLeftPct] = useState(55);
   const vDragging = useRef(false);
   const rightColRef = useRef(null);
 
-  // Apply theme to page
   useEffect(() => {
     document.body.style.background = bodyBg;
     document.body.style.color = bodyText;
     document.body.style.overflow = "hidden";
   }, [bodyBg, bodyText]);
 
-  // Drag handlers (vertical only)
   useEffect(() => {
     const onMove = (e) => {
       if (vDragging.current && rightColRef.current) {
@@ -168,7 +156,6 @@ export default function IDE({ project }) {
     };
   }, []);
 
-  // Files for FileExplorer (only /public/* + /src/*)
   const filesForExplorer = useMemo(() => {
     const out = {};
     Object.entries(providerFiles).forEach(([p, code]) => {
@@ -177,7 +164,6 @@ export default function IDE({ project }) {
     return out;
   }, [providerFiles]);
 
-  // Load external project (normalize once)
   useEffect(() => {
     if (!project) return;
     setProviderFiles(normalizeFiles(project.files || {}));
@@ -185,7 +171,6 @@ export default function IDE({ project }) {
     setProjectId(project.id || makeId());
   }, [project]);
 
-  // Keep Sandpack configuration stable across renders
   const sandpackSetup = useMemo(
     () => ({
       entry: "/src/index.js",
@@ -194,7 +179,6 @@ export default function IDE({ project }) {
     []
   );
 
-  // Visible tabs: canonical + any other /src/* files
   const visibleFiles = useMemo(() => {
     const keys = Object.keys(providerFiles).filter((p) => p === "/public/index.html" || p.startsWith("/src/"));
     const weight = new Map([
@@ -228,7 +212,6 @@ export default function IDE({ project }) {
       const res = await fetch(`${API_BASE}/projects`, { headers: { "Content-Type": "application/json" } });
       if (!res.ok) throw new Error(`List failed: ${res.status}`);
       const data = await res.json();
-      // Accept either {projects: []} or [] directly
       const arr = Array.isArray(data) ? data : data.projects || [];
       setServerProjects(arr);
     } catch (e) {
@@ -256,8 +239,61 @@ export default function IDE({ project }) {
     }
   }, [selectedServerId]);
 
-  // Optional: auto-load list on mount (comment out if you prefer manual)
+  // Save current editor files to the server (create or update)
+  const saveToServer = useCallback(async () => {
+    if (!API_BASE) return alert("API_BASE missing");
+    const latest = window.__cipherstudio_snapshot?.() || providerFiles;
+    const payload = { projectName, files: normalizeFiles(latest) };
+
+    try {
+      if (!selectedServerId) {
+        // create new
+        const res = await fetch(`${API_BASE}/projects`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const { id } = await res.json();
+        setSelectedServerId(id);
+        await refreshServerProjects();
+        alert(`Saved to server. New ID: ${id}`);
+      } else {
+        // update existing
+        const res = await fetch(`${API_BASE}/projects/${selectedServerId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        await refreshServerProjects();
+        alert("Updated server project!");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Save to server failed. Check backend logs and CORS.");
+    }
+  }, [API_BASE, projectName, providerFiles, selectedServerId, refreshServerProjects]);
+
+  // Delete the selected server project entirely
+  const deleteServerProject = useCallback(async () => {
+    if (!selectedServerId) return alert("Select a server project first.");
+    if (!confirm("Delete this project from the server? This cannot be undone.")) return;
+
+    try {
+      const res = await fetch(`${API_BASE}/projects/${selectedServerId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(await res.text());
+      setSelectedServerId("");
+      await refreshServerProjects();
+      alert("Deleted server project.");
+    } catch (e) {
+      console.error(e);
+      alert("Delete failed. Check backend logs.");
+    }
+  }, [API_BASE, selectedServerId, refreshServerProjects]);
+
   useEffect(() => {
+    // Optional auto-load:
     // refreshServerProjects();
   }, [refreshServerProjects]);
 
@@ -341,6 +377,9 @@ export default function IDE({ project }) {
           onServerSelect={setSelectedServerId}
           refreshServerProjects={refreshServerProjects}
           openServerProject={openServerProject}
+          /* NEW: Save/Delete to server */
+          saveToServer={saveToServer}
+          deleteServerProject={deleteServerProject}
         />
       </div>
 
@@ -391,7 +430,6 @@ export default function IDE({ project }) {
   );
 }
 
-/* Bridge: expose live snapshot to outer Save button via window */
 function SnapshotBridge() {
   const snapshot = useFilesSnapshot();
   useEffect(() => {

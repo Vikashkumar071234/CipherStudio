@@ -14,13 +14,17 @@ export default function FileExplorer({
   autosave,
   toggleAutosave,
 
-  // Server projects controls (optional)
+  // Server projects controls
   serverProjects = [],
   serverLoading = false,
   selectedServerId = "",
   onServerSelect = () => {},
   refreshServerProjects = () => {},
   openServerProject = () => {},
+
+  // NEW: server actions
+  saveToServer = () => {},
+  deleteServerProject = () => {},
 }) {
   const isLight = theme === "light";
 
@@ -32,7 +36,6 @@ export default function FileExplorer({
   const editBtn = isLight ? "#607d8b" : "#455a64";
   const delBtn = isLight ? "#e53935" : "#b71c1c";
 
-  // Helpers
   const getBasename = (path) => path.slice(path.lastIndexOf("/") + 1) || path;
   const getFileIcon = (path) => {
     const lower = path.toLowerCase();
@@ -44,7 +47,6 @@ export default function FileExplorer({
     return "📄";
   };
 
-  // Row/layout styles
   const actionBtnBase = {
     width: 28,
     height: 28,
@@ -62,7 +64,7 @@ export default function FileExplorer({
 
   const fileRowStyle = {
     display: "grid",
-    gridTemplateColumns: "1fr 66px", // fixed actions width for consistency
+    gridTemplateColumns: "1fr 66px",
     alignItems: "center",
     gap: 6,
     height: 32,
@@ -88,7 +90,6 @@ export default function FileExplorer({
     fontSize: 12.5,
   };
 
-  // Sort by basename (name-first), use full path to break ties
   const fileKeys = Object.keys(files).sort((a, b) => {
     const an = getBasename(a);
     const bn = getBasename(b);
@@ -232,13 +233,48 @@ export default function FileExplorer({
           color: "#fff",
           border: "none",
           padding: "8px 10px",
-          marginBottom: 12,
+          marginBottom: 8,
           borderRadius: 6,
           cursor: selectedServerId ? "pointer" : "not-allowed",
           width: "100%",
         }}
       >
         ☁️ Open Selected
+      </button>
+
+      {/* NEW: Save to Server */}
+      <button
+        onClick={saveToServer}
+        style={{
+          background: "#7c3aed",
+          color: "#fff",
+          border: "none",
+          padding: "8px 10px",
+          marginBottom: 8,
+          borderRadius: 6,
+          cursor: "pointer",
+          width: "100%",
+        }}
+      >
+        ☁️ Save to Server
+      </button>
+
+      {/* NEW: Delete Server Project */}
+      <button
+        onClick={deleteServerProject}
+        disabled={!selectedServerId}
+        style={{
+          background: selectedServerId ? "#b91c1c" : "#6b7280",
+          color: "#fff",
+          border: "none",
+          padding: "8px 10px",
+          marginBottom: 12,
+          borderRadius: 6,
+          cursor: selectedServerId ? "pointer" : "not-allowed",
+          width: "100%",
+        }}
+      >
+        🗑 Delete Server Project
       </button>
 
       {/* Files */}
@@ -274,15 +310,12 @@ export default function FileExplorer({
           const name = getBasename(path);
           return (
             <li key={path} style={fileRowStyle} title={path}>
-              {/* icon + name */}
               <div style={fileLabelStyle}>
                 <span style={{ fontSize: 14, width: 18, textAlign: "center" }}>
                   {getFileIcon(path)}
                 </span>
                 <span style={fileTextStyle}>{name}</span>
               </div>
-
-              {/* actions */}
               <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                 <button
                   onClick={() => renameFile(path)}
